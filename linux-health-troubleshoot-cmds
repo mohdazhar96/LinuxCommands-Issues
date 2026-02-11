@@ -1,0 +1,111 @@
+# Linux Quick Performance Health Check (≈60 seconds)
+# Run these one after another when investigating slowness / high load / hangs
+
+1. uptime
+   → Quick overview: how long since boot + **load averages** (1/5/15 min)
+
+   Sample output (healthy vs. problematic):
+   11:45:22 up  45 days,  3:12,  4 users,  load average: 0.85, 0.92, 1.01    ← good
+   14:22:10 up 132 days, 18:44, 12 users,  load average: 48.12, 51.77, 53.44  ← VERY BAD
+
+   **Highlight / what to look for:**
+   → Load average > number of CPU cores for long time → saturation (CPU / I/O wait / uninterruptible sleep)
+   → Compare 1-min vs 5-min vs 15-min → is problem getting worse or recovering?
+
+2. dmesg | tail -n 40
+   → Last kernel messages (hardware errors, OOM, disk errors, thermal throttling…)
+
+   **Highlight:**
+   → [Hardware Error], Out of memory, I/O error, disk failure, thermal throttling, CPU stall, soft lockup
+
+3. vmstat 1  (or vmstat 1 10)
+   → Processes, memory, swap, io, cpu summary
+
+   Sample (problematic):
+   procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+    r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+    6  2  24576  18000  1200  45000   8   12   240   180  890 2200 42 18  8 32  0
+
+   **Highlight:**
+   → r (run queue) > number of cores → CPU saturation
+   → b (blocked / uninterruptible sleep) high → usually I/O wait
+   → si/so > 0 and increasing → heavy swapping → bad
+   → wa high (20–40%+) → I/O bottleneck
+
+4. mpstat -P ALL 1  (needs sysstat package)
+   → Per-CPU breakdown
+
+   **Highlight:**
+   → %usr + %sys high on some cores only → single-threaded or imbalanced workload
+   → %iowait high on many cores → disk / NFS bottleneck
+   → %idle very low (<10–20%) consistently → CPU saturated
+
+5. pidstat 1  (or pidstat -urd -h 1)
+   → Per-process CPU / memory / disk / context switches
+
+   **Highlight:**
+   → High %CPU or %MEM for specific PID
+   → High cswch/s (context switches) → lock contention or many threads
+   → High kB_rd/s or kB_wr/s → I/O heavy process
+
+6. iostat -xz 1  (or iostat -xdkz 1)
+   → Detailed disk stats (very important!)
+
+   Sample (bad disk):
+   Device            r/s     w/s     rkB/s    wkB/s   rrqm/s   wrqm/s  %rrqm  %wrqm r_await w_await aqu-sz rareq-sz wareq-sz svctm  %util
+   nvme0n1         180.0   420.0  14500.0  38000.0     0.0     15.0   0.00   3.45    2.1    18.4  32.1     80.6     90.5  4.2   98.7
+
+   **Highlight:**
+   → %util close to 100% → disk saturated
+   → await / svctm high (>10–20 ms) → slow storage
+   → aqu-sz (queue length) > 1–2 per disk → queuing / bottleneck
+   → Very high w/s or wkB/s → write-heavy workload
+
+7. free -m
+   → Memory overview (human-readable)
+
+   Sample:
+                 total        used        free      shared  buff/cache   available
+   Mem:          64000       58000        1200         800        4800        3500
+   Swap:         8192         600        7592
+
+   **Highlight:**
+   → available very low (< 10–20% of total) → memory pressure
+   → Swap used > few hundred MB and increasing → swapping → bad for latency
+
+8. sar -n DEV 1
+   → Network interface stats (packets, throughput)
+
+   **Highlight:**
+   → High rxpck/s + txpck/s + very low %ifutil or errors → network saturation
+   → rxerr/s, txerr/s, coll/s > 0 → network problems
+
+9. sar -n TCP,ETCP 1
+   → TCP stats (retransmits, connection issues)
+
+   **Highlight:**
+   → retrans/s > 0 and increasing → packet loss / bad network
+   → High attempt/s + fail/s → connection issues / port exhaustion
+
+10. top  (or htop / glances)
+    → Interactive view – sort by CPU/MEM/IO
+
+    **Highlight (press 1 for per-CPU, Shift+P/M/I):**
+    → Top processes by %CPU / %MEM
+    → %wa (iowait) column high
+    → Load average (top line)
+    → zombie / defunct processes
+
+Quick decision tree:
+High load + high %wa / iowait / iostat %util → disk / NFS problem
+High load + high r in vmstat + low %idle → CPU bound
+High swap used + si/so > 0 → memory pressure / OOM risk
+High retrans / errors in sar TCP → network issue
+Kernel messages in dmesg → hardware/kernel fault
+
+
+
+Differences:
+vmstat → big picture of the whole machine (“Is the server generally overloaded, swapping or waiting for disk?”)
+mpstat → zoom into CPU per core (“Which cores are busy? Is the load balanced across CPUs?”)
+pidstat → zoom into which program is guilty (“Which exact program or process is using all the CPU / doing lots of I/O?)
